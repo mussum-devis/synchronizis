@@ -1,0 +1,285 @@
+#!/usr/bin/env python
+
+# Copyright 2013,2013 Rodrigo Dias Cruz
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+
+# Mirrors a Git repository to one or more target repositories
+#
+# This is a post-update Git hook (if you do not know what a Git hook is, see
+# "git help hooks") and does the mirroring on every push to the repository.
+#
+# It must be copied to <git repository>/hooks/post-update (and made executable)
+# to be used. Additionally, some Git config variables must be set on the
+# repository:
+#
+#   mirroring.enabled = (true | false)
+#
+#     Whether to enable or disable automatic mirroring
+#
+#   mirroring.targets = target1 [target2 ...]
+#
+#     Target (mirror) repositories to be used. This is a space separated list
+#     of Git repository URLS, like the ones used in "git push". See the section
+#     "GIT URLS" in "git help push" for more infomartion.
+#
+#     Any of the Git supported URLS will work, as long as no user interaction
+#     is needed (i.e. no password prompts). The most common cases are local
+#     repositories and remote repositories over SSH using key authentication.
+#
+#     For example, to mirror to the remote repository "mirror.git" located at
+#     server "hostname" over SSH and to the local repository "local-mirror.git":
+#
+#       "git@hostname:/remote/mirror.git /home/joe/local-mirror.git"
+#   
+#   mirroring.sources = [source1 [source2 ...]]
+#
+#     This is optional. If not set or set empty, the whole Git repository will
+#     be mirrored (i.e. any branches or tags). If set, only the specified refs
+#     (branches or tags) will be mirrored.
+#
+#     This is a space separated list of gitolite-like refexes (ordinary Git refs
+#     specified as regular expressions). For more information, see:
+#     http://sitaramc.github.com/gitolite/refex.html. Examples below.
+#
+#     Sets only branches whose names start with "stable/" and tags whose
+#     names start with "release-" to be mirrored:
+#
+#       "refs/heads/stable/ refs/tags/release-"
+#
+#     The prefix "refs/heads/" can be omitted if prefered:
+#
+#       "stable/ refs/tags/beta-release-"
+#
+#     Sets only the branch "master" and the tag "release-1.0" to be mirrored:
+#
+#       "master$ refs/tags/release-1.0$"
+#
+#     Note the character "$". It is required to specify single branches or tags
+#     instead of "all branches (or tags) whose names that start with ...".
+#
+#     IMPORTANT: for compatibility with gitolite, the character "!" may be used
+#     instead of the character "$", with same effect as explained above.
+
+
+#
+# IMPORTS
+#
+import re
+import shlex
+import subprocess
+import sys
+
+
+#
+# CONSTANTS AND DEFINITIONS
+#
+CFG_ENABLED = 'mirroring.enabled'
+CFG_SOURCES = 'mirroring.sources'
+CFG_TARGETS = 'mirroring.targets'
+CMD_GET_CONFIG = '/usr/bin/git config --local --get %s'
+CMD_MIRROR = '/usr/bin/git push %s %s'
+
+
+#
+# CODE
+#
+def echo(message):
+    """
+    Outputs a message
+
+    @type  message: basestring
+    @param message: message to be output
+
+    @rtype: None
+    @returns: nothing
+    """
+    sys.stderr.write(message.rstrip() + '\n')
+# echo()
+
+def getConfig(key, default = None):
+    """
+    Returns the git-config value for the passed key. If the key is not found,
+    returns the passed default value.
+
+    @type  default: object
+    @param default: default value to be returned
+
+    @rtype: basestring
+    @returns: git-config value for the passed key
+    """
+    # create process
+    process = subprocess.Popen(shlex.split(CMD_GET_CONFIG % key),
+                               shell = False,
+                               stdout = subprocess.PIPE,
+                               stderr = subprocess.PIPE)
+
+    # get its output
+    stdout, stderr = process.communicate()
+
+    # processes failed: return default
+    if process.wait() != 0:
+        return default
+
+    # return value
+    return stdout.strip()
+# getConfig()
+
+def getPatterns():
+    """
+    Returns patterns to match branches to be mirrored
+
+    @rtype: list
+    @returns: patterns to match branches to be mirrored
+    """
+    # no patterns in git config: no patterns to return
+    config = getConfig(CFG_SOURCES)
+
+    if config == None:
+        return []
+
+    # convert patterns to regular expressions
+    patterns = []
+
+    for pattern in config.split():
+
+        # pattern does not start in "refs/": prepend "refs/heads/"
+        if pattern.startswith('refs/') == False:
+            pattern = 'refs/heads/' + pattern
+
+        # pattern finishes in !: replace with $
+        if pattern.endswith('!'):
+            pattern = pattern[:-1] + '$'
+
+        # pattern does not finish in $: append .+
+        elif pattern.endswith('$') == False:
+            pattern += '.+'
+
+        # compile regular expression
+        patterns.append(re.compile(pattern))
+
+    # return patterns as regular expressions
+    return patterns
+# getPatterns()
+
+def getRefsToMirror(refs, patterns):
+    """
+    Returns only the refs that match any of the passed patterns
+
+    @type  refs: list
+    @param refs: refs to be analysed
+
+    @type  patterns: list
+    @param patterns: patterns to be used
+
+    @rtype: set
+    @returns: refs that match any of the passed patterns
+    """
+    toMirror = set()
+
+    for ref in refs:
+        for pattern in patterns:
+
+            # ref matches pattern: select it to be mirrored
+            if pattern.match(ref) != None:
+                toMirror.add(ref)
+                break
+
+    return toMirror
+# getRefsToMirror()
+
+def main(args):
+    """
+    Entry point
+
+    @rtype: int
+    @returns: exit status
+    """
+    # mirroring disabled: nothing to do
+    if getConfig(CFG_ENABLED, 'false') != 'true':
+        echo('[info] Mirroring not enabled. Nothing to do.')
+        return 0
+
+    # no mirrors configured: nothing to do
+    mirrors = getConfig(CFG_TARGETS)
+
+    if mirrors == None:
+        echo('[info] No targets (mirrors) configured. Nothing to do.')
+        return 0
+
+    # get patterns to match refs against
+    patterns = getPatterns()
+
+    if len(patterns) == 0:
+        echo('[info] No branches or tags configured to be mirrored. Nothing to do.')
+        return 0
+
+    # select refs to be mirrored
+    refs = getRefsToMirror(args, patterns)
+
+    # no refs to be mirrored: done
+    if len(refs) == 0:
+        echo('[info] Nothing to be mirrored. Nothing to do.')
+        return 0
+
+    # output refs to be mirrored
+    echo('Will mirror %s\n' % ' '.join(sorted(refs)))
+
+    # mirror refs and return exit status
+    return mirror(refs, mirrors.split())
+# main()
+
+def mirror(refs, remotes):
+    """
+    Mirror the passed refs to the passed remote
+
+    @type  refs: set
+    @param refs: refs to be mirrored
+
+    @type  remotes: list
+    @param remotes: mirroring destinations
+
+    @rtype: int
+    @returns: 0 on success, non-zero on error
+    """
+    # initialize exit status
+    status = 0
+
+    # mirror to each remote
+    for remote in remotes:
+
+        # report operation to user
+        echo('Mirroring to %s' % remote)
+
+        # get mirror command
+        cmd = CMD_MIRROR % (remote, ' '.join(refs))
+
+        # create process
+        process = subprocess.Popen(shlex.split(cmd), shell = False)
+
+        # get exit status
+        status += process.wait()
+
+    return status
+# mirror()
+
+
+#
+# ENTRY POINT
+#
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))
+
+
