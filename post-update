@@ -89,6 +89,7 @@ import sys
 CFG_ENABLED = 'mirroring.enabled'
 CFG_SOURCES = 'mirroring.sources'
 CFG_TARGETS = 'mirroring.targets'
+CMD_EXISTS = 'git show-ref %s'
 CMD_GET_CONFIG = '/usr/bin/git config --get %s'
 CMD_MIRROR = '/usr/bin/git push %s %s'
 
@@ -108,6 +109,25 @@ def echo(message):
     """
     sys.stderr.write(message.rstrip() + '\n')
 # echo()
+
+def exists(ref):
+    """
+    Returns True if the passed ref exists, False otherwise.
+
+    @type  ref: basestring
+    @param ref: ref to be mirrored
+
+    @rtype: bool
+    @returns: True is the ref exists, False otherwise.
+    """
+    # create process
+    process = subprocess.Popen(shlex.split(CMD_EXISTS % ref), shell = False)
+
+    # get exit status
+    status = process.wait() or 0
+
+    return status == 0
+# exists()
 
 def getConfig(key, default = None):
     """
@@ -192,10 +212,16 @@ def getRefsToMirror(refs, patterns):
     for ref in refs:
         for pattern in patterns:
 
-            # ref matches pattern: select it to be mirrored
-            if pattern.match(ref) != None:
-                toMirror.add(ref)
-                break
+            # ref does not match pattern: ignore it
+            if pattern.match(ref) == None:
+                continue
+
+            # ref no longer exists: set it to be erased from mirror
+            if exists(ref) == False:
+                ref = ':' + ref
+
+            # select ref to be mirrored
+            toMirror.add(ref)
 
     return toMirror
 # getRefsToMirror()
