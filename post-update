@@ -91,7 +91,7 @@ CFG_SOURCES = 'mirroring.sources'
 CFG_TARGETS = 'mirroring.targets'
 CMD_EXISTS = 'git show-ref %s'
 CMD_GET_CONFIG = '/usr/bin/git config --get %s'
-CMD_MIRROR = '/usr/bin/git push %s %s'
+CMD_MIRROR = '/usr/bin/git push %s %s --force'
 
 
 #
